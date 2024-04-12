@@ -80,14 +80,14 @@ def B_matrix(combined_v_vector):
 def intrinsic_matrix(B):
     c_y = (B[0,1]*B[0,2] - B[0,0]*B[1,2])/(B[0,0]*B[1,1] - B[0,1]**2)
     lamb = B[2,2] - (B[0,2]**2 + c_y*(B[0,1]*B[0,2] - B[0,0]*B[1,2]))/B[0,0]
-    print(B[0,0])
+    #print(B[0,0])
     f_x = np.sqrt(lamb/B[0,0])
     f_y = np.sqrt(lamb*(B[0,0]/(B[0,0]*B[1,1] - B[0,1]**2)))
     gamma = -(B[0,1]*(f_x**2)*f_y)/lamb
     c_x = (gamma*c_y/f_y) - (B[0,2]*(f_x**2)/lamb)
     return np.array([[f_x,gamma,c_x],[0,f_y,c_y],[0,0,1]]).astype(np.float32)
 
-def rot_trans_matrices(K,homographies):
+def calc_rot_trans_matrices(K,homographies):
     matrices = []
     for H in homographies:
         h1 = H[:,0]
@@ -99,34 +99,38 @@ def rot_trans_matrices(K,homographies):
         r3 = np.cross(r1,r2)
         t = np.dot(np.linalg.inv(K),h3)/lamb
         matrix = np.vstack((r1,r2,r3,t)).T
-        matrix = np.hstack((matrix,np.array([0,0,0,1]))).astype(np.float32)
+        matrix = np.concatenate((matrix,np.array([[0,0,0,1]])),axis=0).astype(np.float32)
         matrices.append(matrix)
     return matrices
 
-def reprojection_error_single_image(intrinsic_params,base_corners,img_corners,rot_trans_matrix):
+def reprojection_error_single_image(intrinsic_params,base_corners,img_corners,orig_rot_trans_matrix):
     f_x, f_y, c_x, c_y, gamma, k1, k2 = list(intrinsic_params)
     K = np.array([[f_x,gamma,c_x],[0,f_y,c_y],[0,0,1]]).astype(np.float32)
+    rot_trans_matrix = np.array([orig_rot_trans_matrix[:3,0],orig_rot_trans_matrix[:3,1],orig_rot_trans_matrix[:3,3]]).reshape(3,3)
     ext_int_matrix = np.dot(K,rot_trans_matrix)
+    reprojection_error = 0
     for i in range(img_corners.shape[0]):
         base_corner_3D = np.array([base_corners[i,0],base_corners[i,1],0,1]).reshape(4,1)
+        base_corner_2D = np.array([base_corners[i,0],base_corners[i,1],1]).reshape(3,1)
         img_corner_3D = np.array([img_corners[i,0],img_corners[i,1],0,1]).reshape(4,1)
-        img_plane_proj_corner = np.dot(rot_trans_matrix,base_corner_3D).reshape(4)
+        img_plane_proj_corner = np.dot(orig_rot_trans_matrix,base_corner_3D).reshape(4)
         img_plane_proj_corner = img_plane_proj_corner/img_plane_proj_corner[2]
         x, y = img_plane_proj_corner[0], img_plane_proj_corner[1]
         distortion_radius = ((x)**2 + (y)**2)**0.5
-        sensor_plane_proj_corner = np.dot(ext_int_matrix,base_corner_3D).reshape(4)
+        sensor_plane_proj_corner = np.dot(ext_int_matrix,base_corner_2D).reshape(3)
         sensor_plane_proj_corner = sensor_plane_proj_corner/sensor_plane_proj_corner[2]
         u, v = sensor_plane_proj_corner[0], sensor_plane_proj_corner[1]
         u_dash = c_x + (u-c_x)*(k1*(distortion_radius**2) + k2*(distortion_radius**4))
         v_dash = c_y + (v-c_y)*(k1*(distortion_radius**2) + k2*(distortion_radius**4))
         img_corner_3D_proj = np.array([u_dash,v_dash,0,1]).reshape(4)
         error = np.linalg.norm(img_corner_3D_proj-img_corner_3D)
-        return error
+        reprojection_error += error
+    return reprojection_error
     
-def total_reprojection_error(base_corners,all_img_corners,K,Kc,rot_trans_matrices):
+def total_reprojection_error(intrinsic_params,base_corners,all_img_corners,rot_trans_matrices):
     reprojection_errors = []
     for i in range(len(all_img_corners)):
-        reprojection_errors.append(reprojection_error_single_image(base_corners,all_img_corners[i],K,Kc,rot_trans_matrices[i]))
+        reprojection_errors.append(reprojection_error_single_image(intrinsic_params,base_corners,all_img_corners[i],rot_trans_matrices[i]))
     return np.array(reprojection_errors)
 
 def optimize_distortion_params(old_intrinsic_params,base_corners,all_img_corners,rot_trans_matrices):
@@ -159,18 +163,19 @@ def calibrate_wrapper(base_img,imgs):
     V = combined_v_vector(homographies)
     B = B_matrix(V)
     K = intrinsic_matrix(B)
-    rot_trans_matrix_list = rot_trans_matrices(K,homographies)
-    old_instrinsic_params = np.array(K[0,0],K[1,1],K[0,2],K[1,2],K[0,1],0,0).astype(np.float32)
+    rot_trans_matrices = calc_rot_trans_matrices(K,homographies)
+    old_instrinsic_params = np.array([K[0,0],K[1,1],K[0,2],K[1,2],K[0,1],0,0]).astype(np.float32)
     K, Kc = optimize_distortion_params(old_instrinsic_params,base_corners,all_img_corners,rot_trans_matrices)
     print("Camera Intrinsic Matrix (K):")
     print(K)
     print("*************************************************")
     print("Camera Distortion Matrix (Kc):")
+    print(Kc)
     return K, Kc
 
 def main():
     base_img = cv2.imread("checkerboard_pattern.jpg")
-    imgs = load_imgs(CALIBRATION_IMGS_PATH)[:2]
+    imgs = load_imgs(CALIBRATION_IMGS_PATH)
     #img1 = cv2.imread("calibration_imgs/IMG_20170209_042606.jpg")
     #plt.imshow(img1)
     #plt.show()
