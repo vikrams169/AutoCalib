@@ -11,6 +11,8 @@ SQUARES_X, SQUARES_Y = 9, 6
 SQUARE_LENGTH = 21.5
 SUBPIX_CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
+img_reprojection_errors = []
+
 def load_imgs(folder_path):
     images = []
     for filename in os.listdir(folder_path):
@@ -103,12 +105,12 @@ def calc_rot_trans_matrices(K,homographies):
         matrices.append(matrix)
     return matrices
 
-def reprojection_error_single_image(intrinsic_params,base_corners,img_corners,orig_rot_trans_matrix):
+def reproject_corners_single_image(intrinsic_params,base_corners,img_corners,orig_rot_trans_matrix):
     f_x, f_y, c_x, c_y, gamma, k1, k2 = list(intrinsic_params)
     K = np.array([[f_x,gamma,c_x],[0,f_y,c_y],[0,0,1]]).astype(np.float32)
-    rot_trans_matrix = np.array([orig_rot_trans_matrix[:3,0],orig_rot_trans_matrix[:3,1],orig_rot_trans_matrix[:3,3]]).reshape(3,3)
+    rot_trans_matrix = np.array([orig_rot_trans_matrix[:3,0],orig_rot_trans_matrix[:3,1],orig_rot_trans_matrix[:3,3]]).reshape(3,3).T
     ext_int_matrix = np.dot(K,rot_trans_matrix)
-    reprojection_error = 0
+    reprojected_corners = []
     for i in range(img_corners.shape[0]):
         base_corner_3D = np.array([base_corners[i,0],base_corners[i,1],0,1]).reshape(4,1)
         base_corner_2D = np.array([base_corners[i,0],base_corners[i,1],1]).reshape(3,1)
@@ -120,18 +122,49 @@ def reprojection_error_single_image(intrinsic_params,base_corners,img_corners,or
         sensor_plane_proj_corner = np.dot(ext_int_matrix,base_corner_2D).reshape(3)
         sensor_plane_proj_corner = sensor_plane_proj_corner/sensor_plane_proj_corner[2]
         u, v = sensor_plane_proj_corner[0], sensor_plane_proj_corner[1]
-        u_dash = c_x + (u-c_x)*(k1*(distortion_radius**2) + k2*(distortion_radius**4))
-        v_dash = c_y + (v-c_y)*(k1*(distortion_radius**2) + k2*(distortion_radius**4))
-        img_corner_3D_proj = np.array([u_dash,v_dash,0,1]).reshape(4)
-        error = np.linalg.norm(img_corner_3D_proj-img_corner_3D)
+        u_dash = u + (u-c_x)*(k1*(distortion_radius**2) + k2*(distortion_radius**4))
+        v_dash = v + (v-c_y)*(k1*(distortion_radius**2) + k2*(distortion_radius**4))
+        reprojected_corners.append(np.array([u_dash,v_dash,0,1]).astype(np.float32).reshape(4,1))
+    return reprojected_corners
+
+def reprojection_error_single_image(intrinsic_params,base_corners,img_corners,orig_rot_trans_matrix):
+    reprojection_error = 0
+    reprojected_corners = reproject_corners_single_image(intrinsic_params,base_corners,img_corners,orig_rot_trans_matrix)
+    for i in range(len(reprojected_corners)):
+        actual_corner = np.array([img_corners[i][0],img_corners[i][1],0,1]).reshape(4,1)
+        error = np.linalg.norm(reprojected_corners[i]-actual_corner,ord=2)
         reprojection_error += error
-    return reprojection_error
+    return reprojection_error/(SQUARES_X*SQUARES_Y)
     
 def total_reprojection_error(intrinsic_params,base_corners,all_img_corners,rot_trans_matrices):
     reprojection_errors = []
     for i in range(len(all_img_corners)):
         reprojection_errors.append(reprojection_error_single_image(intrinsic_params,base_corners,all_img_corners[i],rot_trans_matrices[i]))
     return np.array(reprojection_errors)
+
+def plot_reprojection_errors(intrinsic_params,base_corners,all_img_corners,rot_trans_matrices):
+    img_reprojection_errors = []
+    for i in range(len(all_img_corners)):
+        img_reprojection_errors.append(reprojection_error_single_image(intrinsic_params,base_corners,all_img_corners[i],rot_trans_matrices[i]))
+    x = range(1,len(img_reprojection_errors)+1)
+    y = np.array(img_reprojection_errors)
+    plt.title("Reprojection Error for Each Image")
+    plt.xlabel("Image Number")
+    plt.ylabel("Reprojection Error")
+    plt.plot(x,y)
+    plt.show()
+
+def show_reprojected_corners(imgs,intrinsic_params,base_corners,all_img_corners,rot_trans_matrices):
+    for i in range(len(imgs)):
+        img = copy.deepcopy(imgs[i])
+        reprojected_corners = reproject_corners_single_image(intrinsic_params,base_corners,all_img_corners[i],rot_trans_matrices[i])
+        for j in range(len(reprojected_corners)):
+            cv2.circle(img,[int(reprojected_corners[j][0,0]),int(reprojected_corners[j][1,0])],7,(255,0,0),-1)
+            cv2.circle(img,[int(all_img_corners[i][j][0]),int(all_img_corners[i][j][1])],7,(0,0,255),-1)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = np.array(img)
+        plt.imshow(img)
+        plt.show()
 
 def optimize_distortion_params(old_intrinsic_params,base_corners,all_img_corners,rot_trans_matrices):
     ls_params = least_squares(fun=total_reprojection_error,x0=old_intrinsic_params,method="lm",args=[base_corners,all_img_corners,rot_trans_matrices])
@@ -149,8 +182,16 @@ def display_homography(rgb_img1,rgb_img2,H):
       plt.imshow(img_concat)
       plt.show()
 
+def getWorldPoints(square_side, h, w):
+    # h, w = [6, 9]
+    Yi, Xi = np.indices((h,w)) 
+    offset = 0
+    lin_homg_pts = np.stack(((Xi.ravel() + offset) * square_side, (Yi.ravel() + offset) * square_side)).T
+    return lin_homg_pts
+
 def calibrate_wrapper(base_img,imgs):
     homographies = []
+    #base_corners = getWorldPoints(12.5, SQUARES_Y, SQUARES_X)
     base_corners = get_corners(copy.deepcopy(base_img))
     all_img_corners = []
     for img in imgs:
@@ -165,13 +206,15 @@ def calibrate_wrapper(base_img,imgs):
     K = intrinsic_matrix(B)
     rot_trans_matrices = calc_rot_trans_matrices(K,homographies)
     old_instrinsic_params = np.array([K[0,0],K[1,1],K[0,2],K[1,2],K[0,1],0,0]).astype(np.float32)
+    Kc = np.array([[0],[0]]).astype(np.float32)
     K, Kc = optimize_distortion_params(old_instrinsic_params,base_corners,all_img_corners,rot_trans_matrices)
+    rot_trans_matrices = calc_rot_trans_matrices(K,homographies)
     print("Camera Intrinsic Matrix (K):")
     print(K)
     print("*************************************************")
     print("Camera Distortion Matrix (Kc):")
     print(Kc)
-    return K, Kc
+    return K, Kc, rot_trans_matrices, all_img_corners, base_corners
 
 def main():
     base_img = cv2.imread("checkerboard_pattern.jpg")
@@ -180,7 +223,10 @@ def main():
     #plt.imshow(img1)
     #plt.show()
     #get_corners(img1)
-    K, rot_trans_matrix_list = calibrate_wrapper(base_img,imgs)
+    K, Kc, rot_trans_matrix_list, all_img_corners, base_corners = calibrate_wrapper(base_img,imgs)
+    intrinsic_params = np.array([K[0,0],K[1,1],K[0,2],K[1,2],K[0,1],Kc[0,0],Kc[1,0]]).astype(np.float32)
+    plot_reprojection_errors(intrinsic_params,base_corners,all_img_corners,rot_trans_matrix_list)
+    show_reprojected_corners(imgs,intrinsic_params,base_corners,all_img_corners,rot_trans_matrix_list)
     '''print(K)
     print("*****************")
     print(rot_trans_matrix_list[0])'''
