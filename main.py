@@ -209,6 +209,7 @@ def plot_reprojection_errors(intrinsic_params,base_corners,all_img_corners,rot_t
     plt.xlabel("Image Number")
     plt.ylabel("Reprojection Error")
     plt.plot(x,y)
+    plt.savefig("results/reprojection_error_graph.png")
     plt.show()
 
 # Overlaying the actual corner positions with the reprojected corner positions for each image
@@ -220,10 +221,12 @@ def show_reprojected_corners(imgs,intrinsic_params,base_corners,all_img_corners,
         reprojected_corners = reproject_corners_single_image(intrinsic_params,base_corners,all_img_corners[i],rot_trans_matrices[i])
         # Marking the locations of the actual corner locations (in red) and the reprojected corners (in blue) over the image
         for j in range(len(reprojected_corners)):
-            cv2.circle(img,[int(all_img_corners[i][j][0]),int(all_img_corners[i][j][1])],11,(0,0,255),-1)
-            cv2.circle(img,[int(reprojected_corners[j][0,0]),int(reprojected_corners[j][1,0])],7,(255,0,0),-1)
+            cv2.circle(img,[int(all_img_corners[i][j][0]),int(all_img_corners[i][j][1])],15,(0,0,255),-1)
+            cv2.circle(img,[int(reprojected_corners[j][0,0]),int(reprojected_corners[j][1,0])],9,(255,0,0),-1)
         img = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
         img = np.array(img)
+        if i==0:
+            cv2.imwrite("results/reprojected_corners.png",img)
         plt.imshow(img)
         plt.show()
 
@@ -232,11 +235,13 @@ def show_undistorted_imgs(imgs,K,Kc):
     # Converting the distortion matrix to a suitable format to undistort the image
     Kc_full = np.array([Kc[0,0],Kc[1,0],0,0]).astype(np.float32)
     # Looping through each of the images
-    for img in imgs:
+    for i in range(len(imgs)):
         # Undistorting each image and displaying it
-        undistorted_img = cv2.undistort(copy.deepcopy(img),K,Kc_full)
+        undistorted_img = cv2.undistort(copy.deepcopy(imgs[i]),K,Kc_full)
         undistorted_img = cv2.cvtColor(undistorted_img,cv2.COLOR_BGR2RGB)
         undistorted_img = np.array(undistorted_img)
+        if i==0:
+            cv2.imwrite("results/undistorted_img.png",undistorted_img)
         plt.imshow(undistorted_img)
         plt.show()
 
